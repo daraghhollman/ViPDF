@@ -1,0 +1,16 @@
+on:
+  push:
+    branches:
+    - main
+
+jobs:
+  ruff:
+    name: Ruff linting & formatting
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: astral-sh/ruff-action@v3
+    - uses: actions/checkout@v4
+    - run: |
+        ruff check --fix
+        ruff format
