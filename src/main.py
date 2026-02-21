@@ -11,55 +11,62 @@ class Window(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
 
+        # Config parameters
         self.move_speed: int = 60  # in pixels
         self.page_gap: int = 5  # in pixels
         self.zoom_rate: float = 0.1
 
+        # Layout things
         self.label = QLabel(self)
         self.label.setScaledContents(True)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.label)
         self.setLayout(layout)
 
+        # Load the document
         self.load_pdf()
 
+        # Initial Params
         self.x_scroll_offset: int = 0
         self.y_scroll_offset: int = 0
         self.zoom: float = 1
+        self.mode: str = "pdf"  # pdf, normal, visual
 
+        # Render the pdf
         self.render_pdf()
 
-        # Movement
-        shortcut_move_left = QShortcut(QKeySequence("H"), self)
-        shortcut_move_left.activated.connect(self.move_left)
-        shortcut_move_down = QShortcut(QKeySequence("J"), self)
-        shortcut_move_down.activated.connect(self.move_down)
-        shortcut_move_up = QShortcut(QKeySequence("K"), self)
-        shortcut_move_up.activated.connect(self.move_up)
-        shortcut_move_right = QShortcut(QKeySequence("L"), self)
-        shortcut_move_right.activated.connect(self.move_right)
+        # Assign keybinds
+        self.set_keybinds()
+        self.change_mode("pdf")
 
-        # Move Page
-        shortcut_half_page_down = QShortcut(QKeySequence("Ctrl+D"), self)
-        shortcut_half_page_down.activated.connect(self.half_page_down)
+    def change_mode(self, mode: str):
 
-        shortcut_half_page_up = QShortcut(QKeySequence("Ctrl+U"), self)
-        shortcut_half_page_up.activated.connect(self.half_page_up)
+        if mode == "pdf":
+            for shortcut in self.pdf_keybinds:
+                shortcut.setEnabled(True)
 
-        # Zoom
-        shortcut_reset_zoom = QShortcut(QKeySequence("Equals"), self)
-        shortcut_reset_zoom.activated.connect(self.reset_zoom)
+            for shortcut in self.normal_keybinds + self.visual_keybinds:
+                shortcut.setEnabled(False)
 
-        shortcut_zoom_in = QShortcut(QKeySequence("Ctrl+Shift+="), self)
-        shortcut_zoom_in.activated.connect(self.zoom_in)
+        elif mode == "normal":
+            for shortcut in self.normal_keybinds:
+                shortcut.setEnabled(True)
 
-        shortcut_zoom_out = QShortcut(QKeySequence("Ctrl+-"), self)
-        shortcut_zoom_out.activated.connect(self.zoom_out)
+            for shortcut in self.pdf_keybinds + self.visual_keybinds:
+                shortcut.setEnabled(False)
 
-        shortcut_move_to_bottom = QShortcut(QKeySequence("Shift+G"), self)
-        shortcut_move_to_bottom.activated.connect(self.move_to_bottom)
+        elif mode == "visual":
+            for shortcut in self.visual_keybinds:
+                shortcut.setEnabled(True)
+
+            for shortcut in self.pdf_keybinds + self.normal_keybinds:
+                shortcut.setEnabled(False)
+
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+        self.mode = mode
 
     def load_pdf(self):
         self.doc = fitz.open(sys.argv[1])
@@ -132,11 +139,66 @@ class Window(QWidget):
         y_max_scroll = max(0, self.total_height - self.label.height())
         self.y_scroll_offset = max(0, min(self.y_scroll_offset, y_max_scroll))
 
+    def set_keybinds(self):
+        self.pdf_keybinds: list[QShortcut] = []
+        self.normal_keybinds: list[QShortcut] = []
+        self.visual_keybinds: list[QShortcut] = []
+
+        # ====== PDF MODE ====== #
+        # Movement
+        move_left = QShortcut(QKeySequence("H"), self)
+        move_left.activated.connect(self.move_left)
+        move_down = QShortcut(QKeySequence("J"), self)
+        move_down.activated.connect(self.move_down)
+        move_up = QShortcut(QKeySequence("K"), self)
+        move_up.activated.connect(self.move_up)
+        move_right = QShortcut(QKeySequence("L"), self)
+        move_right.activated.connect(self.move_right)
+
+        # Move Page
+        half_page_down = QShortcut(QKeySequence("Ctrl+D"), self)
+        half_page_down.activated.connect(self.half_page_down)
+
+        half_page_up = QShortcut(QKeySequence("Ctrl+U"), self)
+        half_page_up.activated.connect(self.half_page_up)
+
+        # Zoom
+        reset_zoom = QShortcut(QKeySequence("Equals"), self)
+        reset_zoom.activated.connect(self.reset_zoom)
+
+        zoom_in = QShortcut(QKeySequence("Ctrl+Shift+="), self)
+        zoom_in.activated.connect(self.zoom_in)
+
+        zoom_out = QShortcut(QKeySequence("Ctrl+-"), self)
+        zoom_out.activated.connect(self.zoom_out)
+
+        move_to_bottom = QShortcut(QKeySequence("Shift+G"), self)
+        move_to_bottom.activated.connect(self.move_to_bottom)
+
+        self.pdf_keybinds.extend(
+            [
+                move_left,
+                move_up,
+                move_down,
+                move_right,
+                half_page_down,
+                half_page_up,
+                reset_zoom,
+                zoom_in,
+                zoom_out,
+                move_to_bottom,
+            ]
+        )
+
+        # Initially disable all keybinds
+        for shortcut in self.pdf_keybinds + self.normal_keybinds + self.visual_keybinds:
+            shortcut.setEnabled(False)
+
     def half_page_down(self):
-        self.scroll_pdf(y_delta=self.page_height / 2)
+        self.scroll_pdf(y_delta=int(self.page_height / 2))
 
     def half_page_up(self):
-        self.scroll_pdf(y_delta=-self.page_height / 2)
+        self.scroll_pdf(y_delta=-int(self.page_height / 2))
 
     def move_down(self):
         self.scroll_pdf(y_delta=self.move_speed)
