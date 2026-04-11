@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pymupdf
-from pymupdf import Page
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
@@ -22,6 +21,137 @@ class Character:
     height: float
     row: int = 0
     column: int = 0
+
+
+class PDFDocument:
+    ROW_TOLERANCE = 3
+
+    def __init__(self, path: str):
+        self.doc = pymupdf.open(path)
+        self.pages: List[Dict[str, Any]] = []
+        self._calculate_page_positions()
+        self._extract_all_characters()
+        self._cluster_rows()
+
+    def _calculate_page_positions(self):
+        self.page_positions = []
+        self.total_height = 0
+        self.page_heights: List[int] = []
+
+        for page in self.doc:
+            h = int(page.rect.height)
+            self.page_heights.append(h)
+            self.page_positions.append((self.total_height, h))
+            self.total_height += h
+
+    def _extract_all_characters(self):
+        for page_id, page in enumerate(self.doc):  # type: ignore[arg-type]
+            page_dict = page.get_text("rawdict")
+            assert isinstance(page_dict, Dict)
+
+            page_characters: List[Character] = []
+
+            blocks: List[Dict[str, Any]] = page_dict["blocks"]
+            for block in blocks:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        character_dict: Dict[str, Any]
+                        for character_dict in span["chars"]:
+                            x0, y0, x1, y1 = character_dict["bbox"]
+                            page_characters.append(
+                                Character(
+                                    char=character_dict["c"],
+                                    page=page_id,
+                                    bbox=character_dict["bbox"],
+                                    x=x0,
+                                    y=y0,
+                                    width=x1 - x0,
+                                    height=y1 - y0,
+                                )
+                            )
+
+            self.pages.append({"Characters": page_characters})
+
+    def _cluster_rows(self):
+        for page in self.pages:
+            page["Characters"].sort(key=lambda char: char.y)
+            page["Rows"] = []
+
+            for char in page["Characters"]:
+                placed = False
+                for row in page["Rows"]:
+                    if abs(row["y"] - char.y) < self.ROW_TOLERANCE:
+                        row["Characters"].append(char)
+                        row["y"] = np.mean([c.y for c in row["Characters"]])
+                        placed = True
+                        break
+                if not placed:
+                    page["Rows"].append({"y": char.y, "Characters": [char]})
+
+            for row in page["Rows"]:
+                row["Characters"].sort(key=lambda char: char.x)
+
+            for row_index, row in enumerate(page["Rows"]):
+                for column_index, character in enumerate(row["Characters"]):
+                    character.row = row_index
+                    character.column = column_index
+
+    def get_character(
+        self, page_index: int, row_index: int, column_index: int
+    ) -> Character | None:
+        for character in self.pages[page_index]["Characters"]:
+            if character.row == row_index and character.column == column_index:
+                return character
+        return None
+
+    def get_new_character(
+        self, current_character: Character | None, delta: Tuple[int, int]
+    ) -> Character | None:
+
+        if current_character is None:
+            return None
+
+        current_page = current_character.page
+        current_row = current_character.row
+        current_column = current_character.column
+
+        new_character = self.get_character(
+            current_page, current_row + delta[0], current_column + delta[1]
+        )
+        if new_character is not None:
+            return new_character
+
+        match delta:
+            case (1, 0):
+                try:
+                    row_below = self.pages[current_page]["Rows"][current_row + 1]
+                except IndexError:
+                    new_character = deepcopy(current_character)
+                    new_character.page += 1
+                    new_character.row = -1
+                    return self.get_new_character(new_character, delta)
+
+                new_row = current_character.row + 1
+                new_column = row_below["Characters"][-1].column
+                return self.get_character(current_page, new_row, new_column)
+
+            case (-1, 0):
+                try:
+                    row_above = self.pages[current_page]["Rows"][current_row - 1]
+                    if current_row == 0:
+                        raise IndexError
+                except IndexError:
+                    new_character = deepcopy(current_character)
+                    new_character.page -= 1
+                    new_character.row = len(self.pages[current_page - 1]["Rows"])
+                    return self.get_new_character(new_character, delta)
+
+                new_row = current_character.row - 1
+                new_column = row_above["Characters"][-1].column
+                return self.get_character(current_page, new_row, new_column)
+
+            case _:
+                raise ValueError("Incorrect input for 'delta'")
 
 
 class Window(QWidget):
@@ -42,8 +172,8 @@ class Window(QWidget):
         layout.addWidget(self.label)
         self.setLayout(layout)
 
-        # Load the document
-        self.load_pdf()
+        self.pdf = PDFDocument(sys.argv[1])
+        self.caret = CaretNavigator(self.pdf)
 
         # Initial Params
         self.x_scroll_offset: int = 0
@@ -54,14 +184,6 @@ class Window(QWidget):
         # Assign keybinds
         self.set_keybinds()
         self.change_mode("normal")
-
-        self.pages: List[Dict[str, Any]] = []
-        self.extract_all_characters()
-
-        self.ROW_TOLERANCE = 3
-        self.cluster_rows()
-
-        self.current_character = self.get_character(0, 0, 0)
 
         # Render the pdf
         self.render_pdf()
@@ -94,20 +216,6 @@ class Window(QWidget):
 
         self.mode = mode
 
-    def load_pdf(self):
-        self.doc = pymupdf.open(sys.argv[1])
-        self.calculate_page_positions()
-
-    def calculate_page_positions(self):
-        self.page_positions = []
-        self.total_height = 0
-
-        for page in self.doc:
-            h = int(page.rect.height)
-            self.page_height = h
-            self.page_positions.append((self.total_height, h))
-            self.total_height += h
-
     def render_pdf(self):
         viewport_h = self.label.height()
         viewport_w = self.label.width()
@@ -120,21 +228,17 @@ class Window(QWidget):
         visible_top = self.y_scroll_offset
         visible_bottom = self.y_scroll_offset + viewport_h
 
-        for i, (page_y, page_h) in enumerate(self.page_positions):
+        for i, (page_y, page_h) in enumerate(self.pdf.page_positions):
 
-            # We need to scale to account for zoom level
             scaled_page_y = int(page_y * self.zoom) + i * self.page_gap
-
             page_bottom = page_y + page_h
 
-            # Skip pages not visible
             if page_bottom < visible_top:
                 continue
             if scaled_page_y > visible_bottom:
                 break
 
-            page = self.doc[i]
-
+            page = self.pdf.doc[i]
             matrix = pymupdf.Matrix(self.zoom, self.zoom)
             pix = page.get_pixmap(matrix=matrix)
 
@@ -146,20 +250,20 @@ class Window(QWidget):
                 QImage.Format.Format_RGB888,
             )
 
-            # Centre pdf in window
             draw_x = (viewport_w - img.width()) // 2 + self.x_scroll_offset
             draw_y = scaled_page_y - visible_top + i * int(self.page_gap * self.zoom)
             painter.drawImage(draw_x, draw_y, img)
 
-            assert self.current_character is not None
-            character_on_this_page = self.current_character.page == i
-            if self.mode == "caret" and character_on_this_page:
+            if (
+                self.mode == "caret"
+                and self.caret.current_character is not None
+                and self.caret.current_character.page == i
+            ):
                 self.highlight_character(
-                    painter, self.current_character, draw_x, draw_y
+                    painter, self.caret.current_character, draw_x, draw_y
                 )
 
         painter.end()
-
         self.label.setPixmap(QPixmap.fromImage(canvas))
 
     def scroll_pdf(self, x_delta: int = 0, y_delta: int = 0):
@@ -169,7 +273,7 @@ class Window(QWidget):
         self.render_pdf()
 
     def clamp_scroll(self):
-        y_max_scroll = max(0, self.total_height - self.label.height())
+        y_max_scroll = max(0, self.pdf.total_height - self.label.height())
         self.y_scroll_offset = max(0, min(self.y_scroll_offset, y_max_scroll))
 
     def set_keybinds(self):
@@ -230,9 +334,6 @@ class Window(QWidget):
         page_draw_x: int,
         page_draw_y: int,
     ):
-        """
-        Highlights a character
-        """
         x0, y0, x1, y1 = character.bbox
 
         scaled_x0 = x0 * self.zoom
@@ -251,286 +352,39 @@ class Window(QWidget):
             QColor(255, 0, 0, 120),
         )
 
-    def get_character(
-        self, page_index: int, row_index: int, column_index: int
-    ) -> Character | None:
-        """
-        Access a character from row and column index
-        """
-
-        page_characters = self.pages[page_index]["Characters"]
-
-        selected_character: Character | None = None
-
-        for character in page_characters:
-
-            if character.row == row_index and character.column == column_index:
-                selected_character = character
-
-            else:
-                continue
-
-        # Except if we can't find a character
-        if selected_character is None:
-            return None
-
-        return selected_character
-
-    def cluster_rows(self):
-        """
-        Not all characters on (visual) rows may not be on the exact same y
-        value. We hence need to define our rows based on clusters of character
-        y values.
-        """
-
-        # First sort all characters on each page by y value
-        for page in self.pages:
-            # Each page contains a list of character dictionaries
-            page["Characters"].sort(key=lambda char: char.y)
-
-            page["Rows"] = []
-
-            # Iterrate through each character and add them to rows.
-            for char in page["Characters"]:
-                placed = False
-
-                for row in page["Rows"]:
-
-                    # Look through rows for characters with similar y values to
-                    # this character.
-                    if abs(row["y"] - char.y) < self.ROW_TOLERANCE:
-                        row["Characters"].append(char)
-
-                        # Define a row y coordinate based on the average of all
-                        # current characters in this row.
-                        row["y"] = np.mean([c.y for c in row["Characters"]])
-
-                        placed = True
-                        break
-
-                # If we can't find a similar row, create a new row.
-                if not placed:
-                    page["Rows"].append({"y": char.y, "Characters": [char]})
-
-            # Lastly, we need to sort each row in x, and give each an index.
-            for row in page["Rows"]:
-                row["Characters"].sort(key=lambda char: char.x)
-
-            for row_index, row in enumerate(page["Rows"]):
-                for column_index, character in enumerate(row["Characters"]):
-                    character.row = row_index
-                    character.column = column_index
-
-    def extract_all_characters(self):
-        # We need to loop through every character in the document.
-        # Our selection could be on any page...
-        page_id: int = 0
-        page: Page
-        for page in self.doc:
-            page_dict = page.get_text("rawdict")
-            assert isinstance(page_dict, Dict)
-
-            page_characters: List[Character] = []
-
-            # ...in any block...
-            blocks: List[Dict[str, Any]] = page_dict["blocks"]
-            for block in blocks:
-                # ...on any line...
-                # Keys: type, number, flags, bbox, lines
-                line: Dict[str, Any]
-                # Not all blocks have lines, e.g. figures, tables, so we use
-                # the get method to return an empty list in those cases.
-                for line in block.get("lines", []):
-
-                    # ...in any span... (wtf is a span???)
-                    # Keys: spans, wmode, dir, bbox
-                    span: Dict[str, Any]
-                    for span in line["spans"]:
-
-                        # ...in any character...
-                        # (oh wait this is what we want!)
-                        character_dict: Dict[str, Any]
-                        for character_dict in span["chars"]:
-
-                            # Keys: origin, bbox, c, synthetic
-                            x0, y0, x1, y1 = character_dict["bbox"]
-                            page_characters.append(
-                                Character(
-                                    char=character_dict["c"],
-                                    page=page_id,
-                                    bbox=character_dict["bbox"],
-                                    x=x0,
-                                    y=y0,  # y local to the page not the document
-                                    width=x1 - x0,
-                                    height=y1 - y0,
-                                )
-                            )
-
-            self.pages.append({"Characters": page_characters})
-            page_id += 1
-
-    def get_new_character(
-        self, current_character: Character, delta: Tuple[int, int]
-    ) -> Character | None:
-        """
-        Get a new character based on the current character and the motion delta.
-        """
-
-        current_page = current_character.page
-        current_row = current_character.row
-        current_column = current_character.column
-
-        # If it is a simple jump, do that
-        new_character = self.get_character(
-            current_page, current_row + delta[0], current_column + delta[1]
-        )
-
-        if new_character is not None:
-            return new_character
-
-        # If not, we need to do some checks to determine where we should be
-        # going.
-
-        match delta:
-
-            # Currently I'm just gonna write some clauses, but ideally this
-            # would be generic to any delta input for maximum functionality.
-            # This will be useful for things like half page down etc.
-            case (1, 0):
-                # Trying to move down.
-                # If we fail to move down, we are either at the bottom of the
-                # page, or the row below is shorter than the current row. We
-                # can tell the difference by attempting to index the row below.
-                try:
-                    row_below = self.pages[current_page]["Rows"][current_row + 1]
-
-                except IndexError:
-                    # If we have an error, we know we just want to go to the
-                    # next page. We can do some fancy recursion :)
-                    new_character = deepcopy(current_character)
-                    new_character.page += 1
-
-                    # Reset to the first row and column of the new page This is
-                    # actually setting it to one before the first row, which
-                    # doesn't exist, but makes for nice recursion here.
-                    new_character.row = -1
-
-                    return self.get_new_character(new_character, delta)
-
-                # Otherwise, we are just trying to move to a row with less
-                # columns. We can return the last character of the next row
-                new_row = current_character.row + 1
-                new_column = row_below["Characters"][-1].column
-
-                new_character = self.get_character(current_page, new_row, new_column)
-
-                return new_character
-
-            case (-1, 0):
-                # Trying to move up.
-                # If we fail to move up, we are either at the top of the
-                # page, or the row above is shorter than the current row.
-                # We can tell the difference by attempting to index the row above.
-                try:
-                    row_above = self.pages[current_page]["Rows"][current_row - 1]
-
-                    # If current_row is 0, this will incorrectly wrap to -1,
-                    # so we explicitly guard against that case.
-                    if current_row == 0:
-                        raise IndexError
-
-                except IndexError:
-                    # If we have an error, we know we just want to go to the
-                    # previous page. We can do some fancy recursion :)
-                    new_character = deepcopy(current_character)
-                    new_character.page -= 1
-
-                    # Reset to the first row and column of the new page. Again,
-                    # this is actually setting it to one after the last row,
-                    # which doesn't exist, but makes for nice recursion here.
-                    new_character.row = len(self.pages[current_page - 1]["Rows"])
-
-                    return self.get_new_character(new_character, delta)
-
-                # Otherwise, we are just trying to move to a row with less
-                # columns. We can return the last character of the previous row
-                new_row = current_character.row - 1
-                new_column = row_above["Characters"][-1].column
-
-                new_character = self.get_character(current_page, new_row, new_column)
-
-                return new_character
-
-            case _:
-                raise ValueError("Incorrect input for 'delta'")
-
     def move_down(self):
         if self.mode == "normal":
             self.scroll_pdf(y_delta=self.move_speed)
-
         elif self.mode == "caret":
-            assert self.current_character is not None
-
-            new_character = self.get_new_character(self.current_character, (1, 0))
-            if new_character is not None:
-                self.current_character = new_character
-
+            self.caret.move((1, 0))
             self.render_pdf()
 
     def move_up(self):
         if self.mode == "normal":
             self.scroll_pdf(y_delta=-self.move_speed)
-
         elif self.mode == "caret":
-            assert self.current_character is not None
-
-            new_character = self.get_new_character(self.current_character, (-1, 0))
-            if new_character is not None:
-                self.current_character = new_character
-
+            self.caret.move((-1, 0))
             self.render_pdf()
 
     def move_left(self):
         if self.mode == "normal":
             self.scroll_pdf(x_delta=self.move_speed)
-
         elif self.mode == "caret":
-            assert self.current_character is not None
-            current_page = self.current_character.page
-            current_row = self.current_character.row
-            current_column = self.current_character.column
-
-            new_character = self.get_character(
-                current_page, current_row, current_column - 1
-            )
-
-            if new_character is not None:
-                self.current_character = new_character
-                self.render_pdf()
+            self.caret.move_left()
+            self.render_pdf()
 
     def move_right(self):
         if self.mode == "normal":
             self.scroll_pdf(x_delta=-self.move_speed)
-
         elif self.mode == "caret":
-            assert self.current_character is not None
-            current_page = self.current_character.page
-            current_row = self.current_character.row
-            current_column = self.current_character.column
-
-            new_character = self.get_character(
-                current_page, current_row, current_column + 1
-            )
-
-            if new_character is not None:
-                self.current_character = new_character
-                self.render_pdf()
+            self.caret.move_right()
+            self.render_pdf()
 
     def half_page_down(self):
-        self.scroll_pdf(y_delta=int(self.page_height / 2))
+        self.scroll_pdf(y_delta=self.pdf.page_heights[0] // 2)
 
     def half_page_up(self):
-        self.scroll_pdf(y_delta=-int(self.page_height / 2))
+        self.scroll_pdf(y_delta=-(self.pdf.page_heights[0] // 2))
 
     def zoom_in(self):
         self.zoom += self.zoom_rate
@@ -549,13 +403,44 @@ class Window(QWidget):
         self.render_pdf()
 
     def move_to_bottom(self):
-        self.y_scroll_offset = self.total_height - self.page_height
+        self.y_scroll_offset = self.pdf.total_height - self.pdf.page_heights[-1]
         self.render_pdf()
 
-    # Ensure that the pdf is updated on window resize
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.render_pdf()
+
+
+class CaretNavigator:
+
+    def __init__(self, pdf: PDFDocument):
+        self.pdf = pdf
+        self.current_character = pdf.get_character(0, 0, 0)
+
+    def move(self, delta: Tuple[int, int]):
+        new = self.pdf.get_new_character(self.current_character, delta)
+        if new is not None:
+            self.current_character = new
+
+    def move_left(self):
+        if self.current_character is None:
+            return
+
+        c = self.current_character
+
+        new = self.pdf.get_character(c.page, c.row, c.column - 1)
+        if new is not None:
+            self.current_character = new
+
+    def move_right(self):
+        if self.current_character is None:
+            return
+
+        c = self.current_character
+
+        new = self.pdf.get_character(c.page, c.row, c.column + 1)
+        if new is not None:
+            self.current_character = new
 
 
 def main():
@@ -571,5 +456,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
