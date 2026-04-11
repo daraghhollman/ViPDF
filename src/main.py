@@ -9,6 +9,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
+from keybinds import CARET_KEYBINDS, NORMAL_KEYBINDS
+
 
 @dataclass
 class Character:
@@ -281,37 +283,14 @@ class Window(QWidget):
         self.caret_keybinds: list[QShortcut] = []
         self.visual_keybinds: list[QShortcut] = []
 
-        # ====== NORMAL MODE ====== #
-        normal_binds = [
-            ("V", self.enter_caret),
-            ("H", self.move_left),
-            ("J", self.move_down),
-            ("K", self.move_up),
-            ("L", self.move_right),
-            ("Ctrl+D", self.half_page_down),
-            ("Ctrl+U", self.half_page_up),
-            ("Equals", self.reset_zoom),
-            ("Ctrl+Shift+=", self.zoom_in),
-            ("Ctrl+-", self.zoom_out),
-            ("Shift+G", self.move_to_bottom),
-        ]
-        for key, handler in normal_binds:
-            sc = QShortcut(QKeySequence(key), self)
-            sc.activated.connect(handler)
-            self.normal_keybinds.append(sc)
-
-        # ====== CARET MODE ====== #
-        caret_binds = [
-            ("Escape", self.exit_caret),
-            ("H", self.move_left),
-            ("J", self.move_down),
-            ("K", self.move_up),
-            ("L", self.move_right),
-        ]
-        for key, handler in caret_binds:
-            sc = QShortcut(QKeySequence(key), self)
-            sc.activated.connect(handler)
-            self.caret_keybinds.append(sc)
+        for binds, shortcut_list in [
+            (NORMAL_KEYBINDS, self.normal_keybinds),
+            (CARET_KEYBINDS, self.caret_keybinds),
+        ]:
+            for key, action in binds:
+                sc = QShortcut(QKeySequence(key), self)
+                sc.activated.connect(getattr(self, action))
+                shortcut_list.append(sc)
 
         # Initially disable all keybinds
         for shortcut in (

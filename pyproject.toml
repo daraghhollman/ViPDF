@@ -12,3 +12,5 @@ dependencies = [
     "textual>=8.0.0",
     "textual-image>=0.8.5",
 ]
+[tool.pyright]
+pythonPath = "src"
