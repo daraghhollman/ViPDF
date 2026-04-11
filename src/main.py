@@ -1,4 +1,6 @@
 import sys
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
@@ -8,7 +10,18 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
-Character = Dict[str, Any]
+
+@dataclass
+class Character:
+    char: str
+    page: int
+    bbox: tuple[float, float, float, float]
+    x: float
+    y: float
+    width: float
+    height: float
+    row: int = 0
+    column: int = 0
 
 
 class Window(QWidget):
@@ -139,7 +152,7 @@ class Window(QWidget):
             painter.drawImage(draw_x, draw_y, img)
 
             assert self.current_character is not None
-            character_on_this_page = self.current_character["Page"] == i
+            character_on_this_page = self.current_character.page == i
             if self.mode == "caret" and character_on_this_page:
                 self.highlight_character(
                     painter, self.current_character, draw_x, draw_y
@@ -261,7 +274,7 @@ class Window(QWidget):
         """
         Highlights a character
         """
-        x0, y0, x1, y1 = character["bbox"]
+        x0, y0, x1, y1 = character.bbox
 
         scaled_x0 = x0 * self.zoom
         scaled_y0 = y0 * self.zoom
@@ -288,11 +301,11 @@ class Window(QWidget):
 
         page_characters = self.pages[page_index]["Characters"]
 
-        selected_character: Dict[str, Any] | None = None
+        selected_character: Character | None = None
 
         for character in page_characters:
 
-            if character["Row"] == row_index and character["Column"] == column_index:
+            if character.row == row_index and character.column == column_index:
                 selected_character = character
 
             else:
@@ -314,7 +327,7 @@ class Window(QWidget):
         # First sort all characters on each page by y value
         for page in self.pages:
             # Each page contains a list of character dictionaries
-            page["Characters"].sort(key=lambda char: char["y"])
+            page["Characters"].sort(key=lambda char: char.y)
 
             page["Rows"] = []
 
@@ -326,28 +339,28 @@ class Window(QWidget):
 
                     # Look through rows for characters with similar y values to
                     # this character.
-                    if abs(row["y"] - char["y"]) < self.ROW_TOLERANCE:
+                    if abs(row["y"] - char.y) < self.ROW_TOLERANCE:
                         row["Characters"].append(char)
 
                         # Define a row y coordinate based on the average of all
                         # current characters in this row.
-                        row["y"] = np.mean([c["y"] for c in row["Characters"]])
+                        row["y"] = np.mean([c.y for c in row["Characters"]])
 
                         placed = True
                         break
 
                 # If we can't find a similar row, create a new row.
                 if not placed:
-                    page["Rows"].append({"y": char["y"], "Characters": [char]})
+                    page["Rows"].append({"y": char.y, "Characters": [char]})
 
             # Lastly, we need to sort each row in x, and give each an index.
             for row in page["Rows"]:
-                row["Characters"].sort(key=lambda char: char["x"])
+                row["Characters"].sort(key=lambda char: char.x)
 
             for row_index, row in enumerate(page["Rows"]):
                 for column_index, character in enumerate(row["Characters"]):
-                    character["Row"] = row_index
-                    character["Column"] = column_index
+                    character.row = row_index
+                    character.column = column_index
 
     def extract_all_characters(self):
         # We need to loop through every character in the document.
@@ -358,7 +371,7 @@ class Window(QWidget):
             page_dict = page.get_text("rawdict")
             assert isinstance(page_dict, Dict)
 
-            page_characters: List[Dict[str, Any]] = []
+            page_characters: List[Character] = []
 
             # ...in any block...
             blocks: List[Dict[str, Any]] = page_dict["blocks"]
@@ -377,21 +390,21 @@ class Window(QWidget):
 
                         # ...in any character...
                         # (oh wait this is what we want!)
-                        character: Dict[str, Any]
-                        for character in span["chars"]:
+                        character_dict: Dict[str, Any]
+                        for character_dict in span["chars"]:
 
                             # Keys: origin, bbox, c, synthetic
-                            x0, y0, x1, y1 = character["bbox"]
+                            x0, y0, x1, y1 = character_dict["bbox"]
                             page_characters.append(
-                                {
-                                    "character": character["c"],
-                                    "Page": page_id,
-                                    "bbox": character["bbox"],
-                                    "x": x0,
-                                    "y": y0,  # y local to the page not the document
-                                    "width": x1 - x0,
-                                    "height": y1 - y0,
-                                }
+                                Character(
+                                    char=character_dict["c"],
+                                    page=page_id,
+                                    bbox=character_dict["bbox"],
+                                    x=x0,
+                                    y=y0,  # y local to the page not the document
+                                    width=x1 - x0,
+                                    height=y1 - y0,
+                                )
                             )
 
             self.pages.append({"Characters": page_characters})
@@ -404,9 +417,9 @@ class Window(QWidget):
         Get a new character based on the current character and the motion delta.
         """
 
-        current_page = current_character["Page"]
-        current_row = current_character["Row"]
-        current_column = current_character["Column"]
+        current_page = current_character.page
+        current_row = current_character.row
+        current_column = current_character.column
 
         # If it is a simple jump, do that
         new_character = self.get_character(
@@ -435,20 +448,20 @@ class Window(QWidget):
                 except IndexError:
                     # If we have an error, we know we just want to go to the
                     # next page. We can do some fancy recursion :)
-                    new_character = current_character.copy()
-                    new_character["Page"] += 1
+                    new_character = deepcopy(current_character)
+                    new_character.page += 1
 
                     # Reset to the first row and column of the new page This is
                     # actually setting it to one before the first row, which
                     # doesn't exist, but makes for nice recursion here.
-                    new_character["Row"] = -1
+                    new_character.row = -1
 
                     return self.get_new_character(new_character, delta)
 
                 # Otherwise, we are just trying to move to a row with less
                 # columns. We can return the last character of the next row
-                new_row = current_character["Row"] + 1
-                new_column = row_below["Characters"][-1]["Column"]
+                new_row = current_character.row + 1
+                new_column = row_below["Characters"][-1].column
 
                 new_character = self.get_character(current_page, new_row, new_column)
 
@@ -470,20 +483,20 @@ class Window(QWidget):
                 except IndexError:
                     # If we have an error, we know we just want to go to the
                     # previous page. We can do some fancy recursion :)
-                    new_character = current_character.copy()
-                    new_character["Page"] -= 1
+                    new_character = deepcopy(current_character)
+                    new_character.page -= 1
 
                     # Reset to the first row and column of the new page. Again,
                     # this is actually setting it to one after the last row,
                     # which doesn't exist, but makes for nice recursion here.
-                    new_character["Row"] = len(self.pages[current_page - 1]["Rows"])
+                    new_character.row = len(self.pages[current_page - 1]["Rows"])
 
                     return self.get_new_character(new_character, delta)
 
                 # Otherwise, we are just trying to move to a row with less
                 # columns. We can return the last character of the previous row
-                new_row = current_character["Row"] - 1
-                new_column = row_above["Characters"][-1]["Column"]
+                new_row = current_character.row - 1
+                new_column = row_above["Characters"][-1].column
 
                 new_character = self.get_character(current_page, new_row, new_column)
 
@@ -524,9 +537,9 @@ class Window(QWidget):
 
         elif self.mode == "caret":
             assert self.current_character is not None
-            current_page = self.current_character["Page"]
-            current_row = self.current_character["Row"]
-            current_column = self.current_character["Column"]
+            current_page = self.current_character.page
+            current_row = self.current_character.row
+            current_column = self.current_character.column
 
             new_character = self.get_character(
                 current_page, current_row, current_column - 1
@@ -542,9 +555,9 @@ class Window(QWidget):
 
         elif self.mode == "caret":
             assert self.current_character is not None
-            current_page = self.current_character["Page"]
-            current_row = self.current_character["Row"]
-            current_column = self.current_character["Column"]
+            current_page = self.current_character.page
+            current_row = self.current_character.row
+            current_column = self.current_character.column
 
             new_character = self.get_character(
                 current_page, current_row, current_column + 1
