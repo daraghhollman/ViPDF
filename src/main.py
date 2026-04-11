@@ -178,77 +178,36 @@ class Window(QWidget):
         self.visual_keybinds: list[QShortcut] = []
 
         # ====== NORMAL MODE ====== #
-        # Change mode
-        enter_caret = QShortcut(QKeySequence("V"), self)
-        enter_caret.activated.connect(self.enter_caret)
-
-        # Movement
-        move_left = QShortcut(QKeySequence("H"), self)
-        move_left.activated.connect(self.move_left)
-        move_down = QShortcut(QKeySequence("J"), self)
-        move_down.activated.connect(self.move_down)
-        move_up = QShortcut(QKeySequence("K"), self)
-        move_up.activated.connect(self.move_up)
-        move_right = QShortcut(QKeySequence("L"), self)
-        move_right.activated.connect(self.move_right)
-
-        # Move Page
-        half_page_down = QShortcut(QKeySequence("Ctrl+D"), self)
-        half_page_down.activated.connect(self.half_page_down)
-
-        half_page_up = QShortcut(QKeySequence("Ctrl+U"), self)
-        half_page_up.activated.connect(self.half_page_up)
-
-        # Zoom
-        reset_zoom = QShortcut(QKeySequence("Equals"), self)
-        reset_zoom.activated.connect(self.reset_zoom)
-
-        zoom_in = QShortcut(QKeySequence("Ctrl+Shift+="), self)
-        zoom_in.activated.connect(self.zoom_in)
-
-        zoom_out = QShortcut(QKeySequence("Ctrl+-"), self)
-        zoom_out.activated.connect(self.zoom_out)
-
-        move_to_bottom = QShortcut(QKeySequence("Shift+G"), self)
-        move_to_bottom.activated.connect(self.move_to_bottom)
-
-        self.normal_keybinds.extend(
-            [
-                move_left,
-                move_up,
-                move_down,
-                move_right,
-                half_page_down,
-                half_page_up,
-                reset_zoom,
-                zoom_in,
-                zoom_out,
-                move_to_bottom,
-            ]
-        )
+        normal_binds = [
+            ("V", self.enter_caret),
+            ("H", self.move_left),
+            ("J", self.move_down),
+            ("K", self.move_up),
+            ("L", self.move_right),
+            ("Ctrl+D", self.half_page_down),
+            ("Ctrl+U", self.half_page_up),
+            ("Equals", self.reset_zoom),
+            ("Ctrl+Shift+=", self.zoom_in),
+            ("Ctrl+-", self.zoom_out),
+            ("Shift+G", self.move_to_bottom),
+        ]
+        for key, handler in normal_binds:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.activated.connect(handler)
+            self.normal_keybinds.append(sc)
 
         # ====== CARET MODE ====== #
-        exit_caret = QShortcut(QKeySequence("Escape"), self)
-        exit_caret.activated.connect(self.exit_caret)
-
-        # Movement
-        caret_move_left = QShortcut(QKeySequence("H"), self)
-        caret_move_left.activated.connect(self.move_left)
-        caret_move_down = QShortcut(QKeySequence("J"), self)
-        caret_move_down.activated.connect(self.move_down)
-        caret_move_up = QShortcut(QKeySequence("K"), self)
-        caret_move_up.activated.connect(self.move_up)
-        caret_move_right = QShortcut(QKeySequence("L"), self)
-        caret_move_right.activated.connect(self.move_right)
-
-        self.caret_keybinds.extend(
-            [
-                caret_move_left,
-                caret_move_up,
-                caret_move_down,
-                caret_move_right,
-            ]
-        )
+        caret_binds = [
+            ("Escape", self.exit_caret),
+            ("H", self.move_left),
+            ("J", self.move_down),
+            ("K", self.move_up),
+            ("L", self.move_right),
+        ]
+        for key, handler in caret_binds:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.activated.connect(handler)
+            self.caret_keybinds.append(sc)
 
         # Initially disable all keybinds
         for shortcut in (
@@ -257,11 +216,11 @@ class Window(QWidget):
             shortcut.setEnabled(False)
 
     def enter_caret(self):
-        self.mode = "caret"
+        self.change_mode("caret")
         self.render_pdf()
 
     def exit_caret(self):
-        self.mode = "normal"
+        self.change_mode("normal")
         self.render_pdf()
 
     def highlight_character(
