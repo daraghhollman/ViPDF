@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
-from keybinds import CARET_KEYBINDS, NORMAL_KEYBINDS, VISUAL_KEYBINDS
+from keybinds import CARET_KEYBINDS, COMMON_KEYBINDS, NORMAL_KEYBINDS, VISUAL_KEYBINDS
 
 
 @dataclass
@@ -128,6 +128,8 @@ class PDFDocument:
                 try:
                     row_below = self.pages[current_page]["Rows"][current_row + 1]
                 except IndexError:
+                    if current_page + 1 >= len(self.pages):
+                        return None
                     new_character = deepcopy(current_character)
                     new_character.page += 1
                     new_character.row = -1
@@ -143,6 +145,8 @@ class PDFDocument:
                     if current_row == 0:
                         raise IndexError
                 except IndexError:
+                    if current_page - 1 < 0:
+                        return None
                     new_character = deepcopy(current_character)
                     new_character.page -= 1
                     new_character.row = len(self.pages[current_page - 1]["Rows"])
@@ -265,7 +269,6 @@ class Window(QWidget):
                 self._highlight_character(
                     painter, self.caret.current_character, draw_x, draw_y
                 )
-                self._scroll_to_keep_caret_visible()
 
             if self.mode == "visual":
                 self._highlight_selection(painter, i, draw_x, draw_y)
@@ -278,6 +281,9 @@ class Window(QWidget):
 
         painter.end()
         self.label.setPixmap(QPixmap.fromImage(canvas))
+
+        if self.mode in ("caret", "visual"):
+            self._scroll_to_keep_caret_visible()
 
     def _highlight_selection(
         self,
@@ -339,6 +345,19 @@ class Window(QWidget):
             )
             self.clamp_scroll()
 
+    def _scroll_to_centre_caret(self):
+        char = self.caret.current_character
+        if char is None:
+            return
+
+        page_index = char.page
+        page_y, _ = self.pdf.page_positions[page_index]
+        scaled_page_y = int(page_y * self.zoom) + page_index * self.page_gap
+
+        char_mid = scaled_page_y + int((char.y + char.height / 2) * self.zoom)
+        self.y_scroll_offset = char_mid - self.label.height() // 2
+        self.clamp_scroll()
+
     def scroll_pdf(self, x_delta: int = 0, y_delta: int = 0):
         self.x_scroll_offset += x_delta
         self.y_scroll_offset += y_delta
@@ -355,9 +374,9 @@ class Window(QWidget):
         self.visual_keybinds: list[QShortcut] = []
 
         for binds, shortcut_list in [
-            (NORMAL_KEYBINDS, self.normal_keybinds),
-            (CARET_KEYBINDS, self.caret_keybinds),
-            (VISUAL_KEYBINDS, self.visual_keybinds),
+            (NORMAL_KEYBINDS + COMMON_KEYBINDS, self.normal_keybinds),
+            (CARET_KEYBINDS + COMMON_KEYBINDS, self.caret_keybinds),
+            (VISUAL_KEYBINDS + COMMON_KEYBINDS, self.visual_keybinds),
         ]:
             for key, action in binds:
                 sc = QShortcut(QKeySequence(key), self)
@@ -413,6 +432,13 @@ class Window(QWidget):
             QColor(255, 0, 0, 120),
         )
 
+    def _rows_per_half_page(self) -> int:
+        rows = self.pdf.pages[0]["Rows"]
+        if not rows:
+            return 1
+        avg_row_height = self.pdf.page_heights[0] / len(rows)
+        return max(1, int((self.pdf.page_heights[0] / 2) / avg_row_height))
+
     def move_down(self):
         if self.mode == "normal":
             self.scroll_pdf(y_delta=self.move_speed)
@@ -446,10 +472,22 @@ class Window(QWidget):
             self.render_pdf()
 
     def half_page_down(self):
-        self.scroll_pdf(y_delta=self.pdf.page_heights[0] // 2)
+        if self.mode == "normal":
+            self.scroll_pdf(y_delta=self.pdf.page_heights[0] // 2)
+
+        elif self.mode in ("caret", "visual"):
+            self.caret.move_n_rows(self._rows_per_half_page())
+            self._scroll_to_centre_caret()
+            self.render_pdf()
 
     def half_page_up(self):
-        self.scroll_pdf(y_delta=-(self.pdf.page_heights[0] // 2))
+        if self.mode == "normal":
+            self.scroll_pdf(y_delta=-(self.pdf.page_heights[0] // 2))
+
+        elif self.mode in ("caret", "visual"):
+            self.caret.move_n_rows(-self._rows_per_half_page())
+            self._scroll_to_centre_caret()
+            self.render_pdf()
 
     def zoom_in(self):
         self.zoom += self.zoom_rate
@@ -486,6 +524,16 @@ class CaretNavigator:
     def move(self, delta: Tuple[int, int]):
         new = self.pdf.get_new_character(self.current_character, delta)
         if new is not None:
+            self.current_character = new
+
+    def move_n_rows(self, n: int):
+        """Move the caret by n rows, negative for up."""
+        delta = (1, 0) if n > 0 else (-1, 0)
+        for _ in range(abs(n)):
+            new = self.pdf.get_new_character(self.current_character, delta)
+            if new is None:
+                break
+
             self.current_character = new
 
     def move_left(self):
