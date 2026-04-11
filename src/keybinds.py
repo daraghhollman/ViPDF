@@ -9,6 +9,11 @@ COMMON_KEYBINDS = [
     ("Shift+G", "move_to_bottom"),
 ]
 
+# Multi-keystroke sequences
+SEQUENCE_KEYBINDS = [
+    ("gg", "move_to_top"),
+]
+
 NORMAL_KEYBINDS = [
     ("V", "enter_caret"),
     ("Equals", "reset_zoom"),

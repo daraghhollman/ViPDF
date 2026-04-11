@@ -9,7 +9,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
-from keybinds import CARET_KEYBINDS, COMMON_KEYBINDS, NORMAL_KEYBINDS, VISUAL_KEYBINDS
+from keybinds import (
+    CARET_KEYBINDS,
+    COMMON_KEYBINDS,
+    NORMAL_KEYBINDS,
+    SEQUENCE_KEYBINDS,
+    VISUAL_KEYBINDS,
+)
 
 
 @dataclass
@@ -194,6 +200,23 @@ class Window(QWidget):
 
         # Render the pdf
         self.render_pdf()
+
+        self._key_buffer: str = ""
+
+    def keyPressEvent(self, event):
+        self._key_buffer += event.text()
+
+        for sequence, action in SEQUENCE_KEYBINDS:
+            if self._key_buffer.endswith(sequence):
+                getattr(self, action)()
+                self._key_buffer = ""
+                return
+
+        # Clear buffer if it can't possibly match any sequence
+        if not any(seq.startswith(self._key_buffer) for seq, _ in SEQUENCE_KEYBINDS):
+            self._key_buffer = ""
+
+        super().keyPressEvent(event)
 
     def change_mode(self, mode: str):
 
@@ -502,11 +525,27 @@ class Window(QWidget):
         self.render_pdf()
 
     def move_to_top(self):
-        self.y_scroll_offset = 0
+        if self.mode == "normal":
+            self.y_scroll_offset = 0
+        elif self.mode in ("caret", "visual"):
+            first_char = self.pdf.get_character(0, 0, 0)
+            if first_char is not None:
+                self.caret.current_character = first_char
+            self._scroll_to_centre_caret()
         self.render_pdf()
 
     def move_to_bottom(self):
-        self.y_scroll_offset = self.pdf.total_height - self.pdf.page_heights[-1]
+        if self.mode == "normal":
+            self.y_scroll_offset = self.pdf.total_height - self.pdf.page_heights[-1]
+        elif self.mode in ("caret", "visual"):
+            last_page = len(self.pdf.pages) - 1
+            last_rows = self.pdf.pages[last_page]["Rows"]
+            last_row = len(last_rows) - 1
+            last_col = last_rows[-1]["Characters"][-1].column
+            last_char = self.pdf.get_character(last_page, last_row, last_col)
+            if last_char is not None:
+                self.caret.current_character = last_char
+            self._scroll_to_centre_caret()
         self.render_pdf()
 
     def resizeEvent(self, event):
