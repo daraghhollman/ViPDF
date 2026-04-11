@@ -18,4 +18,13 @@ CARET_KEYBINDS = [
     ("J", "move_down"),
     ("K", "move_up"),
     ("L", "move_right"),
+    ("V", "enter_visual"),
+]
+
+VISUAL_KEYBINDS = [
+    ("Escape", "exit_visual"),
+    ("H", "move_left"),
+    ("J", "move_down"),
+    ("K", "move_up"),
+    ("L", "move_right"),
 ]

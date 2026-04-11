@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
-from keybinds import CARET_KEYBINDS, NORMAL_KEYBINDS
+from keybinds import CARET_KEYBINDS, NORMAL_KEYBINDS, VISUAL_KEYBINDS
 
 
 @dataclass
@@ -165,6 +165,7 @@ class Window(QWidget):
         self.move_speed: int = 60  # in pixels
         self.page_gap: int = 5  # in pixels
         self.zoom_rate: float = 0.1
+        self.scroll_tolerance: int = 100  # pixels from edge before auto-scrolling
 
         # Layout things
         self.label = QLabel(self)
@@ -261,12 +262,82 @@ class Window(QWidget):
                 and self.caret.current_character is not None
                 and self.caret.current_character.page == i
             ):
-                self.highlight_character(
+                self._highlight_character(
                     painter, self.caret.current_character, draw_x, draw_y
                 )
+                self._scroll_to_keep_caret_visible()
+
+            if self.mode == "visual":
+                self._highlight_selection(painter, i, draw_x, draw_y)
+
+                if (
+                    self.caret.current_character is not None
+                    and self.caret.current_character.page == i
+                ):
+                    self._scroll_to_keep_caret_visible()
 
         painter.end()
         self.label.setPixmap(QPixmap.fromImage(canvas))
+
+    def _highlight_selection(
+        self,
+        painter: QPainter,
+        page_index: int,
+        draw_x: int,
+        draw_y: int,
+    ):
+        selection = [c for c in self.caret.get_selection() if c.page == page_index]
+        if not selection:
+            return
+
+        # Group characters by row
+        rows: Dict[int, List[Character]] = {}
+        for char in selection:
+            rows.setdefault(char.row, []).append(char)
+
+        for row_chars in rows.values():
+            x0 = min(c.bbox[0] for c in row_chars)
+            y0 = min(c.bbox[1] for c in row_chars)
+            x1 = max(c.bbox[2] for c in row_chars)
+            y1 = max(c.bbox[3] for c in row_chars)
+
+            screen_x = int(draw_x + x0 * self.zoom)
+            screen_y = int(draw_y + y0 * self.zoom)
+            screen_w = int((x1 - x0) * self.zoom)
+            screen_h = int((y1 - y0) * self.zoom)
+
+            painter.fillRect(
+                screen_x,
+                screen_y,
+                screen_w,
+                screen_h,
+                QColor(255, 0, 0, 120),
+            )
+
+    def _scroll_to_keep_caret_visible(self):
+        char = self.caret.current_character
+        if char is None:
+            return
+
+        page_index = char.page
+        page_y, _ = self.pdf.page_positions[page_index]
+        scaled_page_y = int(page_y * self.zoom) + page_index * self.page_gap
+
+        char_top = scaled_page_y + int(char.y * self.zoom)
+        char_bottom = char_top + int(char.height * self.zoom)
+
+        viewport_top = self.y_scroll_offset
+        viewport_bottom = self.y_scroll_offset + self.label.height()
+
+        if char_top < viewport_top + self.scroll_tolerance:
+            self.y_scroll_offset = char_top - self.scroll_tolerance
+            self.clamp_scroll()
+
+        elif char_bottom > viewport_bottom - self.scroll_tolerance:
+            self.y_scroll_offset = (
+                char_bottom - self.label.height() + self.scroll_tolerance
+            )
+            self.clamp_scroll()
 
     def scroll_pdf(self, x_delta: int = 0, y_delta: int = 0):
         self.x_scroll_offset += x_delta
@@ -286,6 +357,7 @@ class Window(QWidget):
         for binds, shortcut_list in [
             (NORMAL_KEYBINDS, self.normal_keybinds),
             (CARET_KEYBINDS, self.caret_keybinds),
+            (VISUAL_KEYBINDS, self.visual_keybinds),
         ]:
             for key, action in binds:
                 sc = QShortcut(QKeySequence(key), self)
@@ -306,7 +378,17 @@ class Window(QWidget):
         self.change_mode("normal")
         self.render_pdf()
 
-    def highlight_character(
+    def enter_visual(self):
+        self.caret.start_selection()
+        self.change_mode("visual")
+        self.render_pdf()
+
+    def exit_visual(self):
+        self.caret.clear_selection()
+        self.change_mode("caret")
+        self.render_pdf()
+
+    def _highlight_character(
         self,
         painter: QPainter,
         character: Character,
@@ -334,28 +416,32 @@ class Window(QWidget):
     def move_down(self):
         if self.mode == "normal":
             self.scroll_pdf(y_delta=self.move_speed)
-        elif self.mode == "caret":
+
+        elif self.mode in ("caret", "visual"):
             self.caret.move((1, 0))
             self.render_pdf()
 
     def move_up(self):
         if self.mode == "normal":
             self.scroll_pdf(y_delta=-self.move_speed)
-        elif self.mode == "caret":
+
+        elif self.mode in ("caret", "visual"):
             self.caret.move((-1, 0))
             self.render_pdf()
 
     def move_left(self):
         if self.mode == "normal":
             self.scroll_pdf(x_delta=self.move_speed)
-        elif self.mode == "caret":
+
+        elif self.mode in ("caret", "visual"):
             self.caret.move_left()
             self.render_pdf()
 
     def move_right(self):
         if self.mode == "normal":
             self.scroll_pdf(x_delta=-self.move_speed)
-        elif self.mode == "caret":
+
+        elif self.mode in ("caret", "visual"):
             self.caret.move_right()
             self.render_pdf()
 
@@ -395,6 +481,7 @@ class CaretNavigator:
     def __init__(self, pdf: PDFDocument):
         self.pdf = pdf
         self.current_character = pdf.get_character(0, 0, 0)
+        self.selection_start: Character | None = None
 
     def move(self, delta: Tuple[int, int]):
         new = self.pdf.get_new_character(self.current_character, delta)
@@ -420,6 +507,39 @@ class CaretNavigator:
         new = self.pdf.get_character(c.page, c.row, c.column + 1)
         if new is not None:
             self.current_character = new
+
+    # Logic for visual mode
+    def start_selection(self):
+        self.selection_start = self.current_character
+
+    def clear_selection(self):
+        self.selection_start = None
+
+    def get_selection(self) -> List[Character]:
+        """
+        Returns all characters between selection_start and current_character
+        in document order (page -> row -> column).
+        """
+        if self.selection_start is None or self.current_character is None:
+            return []
+
+        start = self.selection_start
+        end = self.current_character
+
+        # Normalise so that 'first' is always earlier in the document
+        def char_key(c: Character) -> Tuple[int, int, int]:
+            return (c.page, c.row, c.column)
+
+        if char_key(start) > char_key(end):
+            start, end = end, start
+
+        selected: List[Character] = []
+        for page in self.pdf.pages:
+            for character in page["Characters"]:
+                if char_key(start) <= char_key(character) <= char_key(end):
+                    selected.append(character)
+
+        return selected
 
 
 def main():
