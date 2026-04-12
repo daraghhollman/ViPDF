@@ -254,14 +254,20 @@ class PDFDocument:
 
 
 class CommandBarFilter(QObject):
-    def __init__(self, on_escape):
+    def __init__(self, on_escape, on_tab):
         super().__init__()
         self._on_escape = on_escape
+        self._on_tab = on_tab
 
     def eventFilter(self, obj, event):
         if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Escape:
             self._on_escape()
             return True
+
+        if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Tab:
+            self._on_tab()
+            return True
+
         return False
 
 
@@ -291,7 +297,9 @@ class Window(QWidget):
         self.command_bar = QLineEdit(self)
         self.command_bar.setVisible(False)
         self.command_bar.returnPressed.connect(self.submit_command)
-        self._cmd_filter = CommandBarFilter(self.exit_command)
+        self._cmd_filter = CommandBarFilter(
+            self.exit_command, self.autocomplete_command
+        )
         self.command_bar.installEventFilter(self._cmd_filter)
 
         self.pdf = PDFDocument(sys.argv[1])
@@ -421,6 +429,21 @@ class Window(QWidget):
 
             case _:
                 self._show_command_error(f"Not a command: {cmd}")
+
+    COMMANDS = ["highlight", "delete-annotation", "w"]
+
+    def autocomplete_command(self):
+        if self.command_bar.isReadOnly():
+            return
+
+        text = self.command_bar.text().lstrip(":")
+        matches = [c for c in self.COMMANDS if c.startswith(text)]
+
+        if len(matches) == 1:
+            self.command_bar.setText(":" + matches[0])
+            self.command_bar.setCursorPosition(len(matches[0]) + 1)
+        elif len(matches) > 1:
+            self._show_command_error("  ".join(matches))
 
     def _show_command_error(self, message: str):
         self.command_bar.setText(message)
