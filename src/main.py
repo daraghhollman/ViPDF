@@ -59,6 +59,7 @@ class PDFDocument:
     ROW_TOLERANCE = 3
 
     def __init__(self, path: str):
+        self.path = path  # Record the path so we can save to it
         self.doc = pymupdf.open(path)
         self.pages: List[Dict[str, Any]] = []
         self._calculate_page_positions()
@@ -215,6 +216,42 @@ class PDFDocument:
                 return annotation
         return None
 
+    def delete_annotation(self, annotation: Annotation):
+        page = self.doc[annotation.page]
+        for annot in page.annots():
+            if pymupdf.Rect(annotation.rect) == annot.rect:
+                page.delete_annot(annot)
+                break
+        self._extract_all_annotations()
+
+    def create_highlight_annotation(
+        self, characters: List[Character], comment: str = ""
+    ):
+        if not characters:
+            return
+
+        from collections import defaultdict
+
+        by_page: Dict[int, Dict[int, List[Character]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for c in characters:
+            by_page[c.page][c.row].append(c)
+
+        for page_index, rows in by_page.items():
+            page = self.doc[page_index]
+            for row_chars in rows.values():
+                x0 = min(c.bbox[0] for c in row_chars)
+                y0 = min(c.bbox[1] for c in row_chars)
+                x1 = max(c.bbox[2] for c in row_chars)
+                y1 = max(c.bbox[3] for c in row_chars)
+                annot = page.add_highlight_annot(pymupdf.Rect(x0, y0, x1, y1))
+                if comment:
+                    annot.set_info(content=comment)
+                annot.update()
+
+        self._extract_all_annotations()
+
 
 class CommandBarFilter(QObject):
     def __init__(self, on_escape):
@@ -326,7 +363,62 @@ class Window(QWidget):
         parts = text.split(" ", 1)
         cmd = parts[0]
 
+        args = parts[1:] if len(parts) > 1 else []
+
         match cmd:
+            case "w":
+                self.pdf.doc.save(
+                    self.pdf.path, incremental=True, encryption=pymupdf.PDF_ENCRYPT_KEEP
+                )
+                self.exit_command()
+
+            case "highlight":
+                if self._mode_before_command != "visual":
+                    self._show_command_error("highlight requires visual mode")
+                    return
+
+                comment = ""
+                if args:
+                    arg_str = args[0].strip()
+                    if arg_str.startswith("-m "):
+                        quoted = arg_str[3:].strip()
+                        if quoted.startswith('"') and quoted.endswith('"'):
+                            comment = quoted[1:-1]
+                        else:
+                            self._show_command_error(
+                                "highlight: -m value must be quoted"
+                            )
+                            return
+                    else:
+                        self._show_command_error(
+                            f"highlight: unknown argument: {arg_str}"
+                        )
+                        return
+
+                self.exit_command()
+                self.pdf.create_highlight_annotation(
+                    self.caret.get_selection(), comment=comment
+                )
+                self.caret.clear_selection()
+                self.change_mode("caret")
+                self.render_pdf()
+
+            case "delete-annotation":
+                if self.caret.current_character is None:
+                    self._show_command_error(
+                        "delete-annotation: no character under caret"
+                    )
+                    return
+                annot = self.pdf.get_annotation_at(self.caret.current_character)
+                if annot is None:
+                    self._show_command_error(
+                        "delete-annotation: no annotation under caret"
+                    )
+                    return
+                self.pdf.delete_annotation(annot)
+                self.exit_command()
+                self.render_pdf()
+
             case _:
                 self._show_command_error(f"Not a command: {cmd}")
 
