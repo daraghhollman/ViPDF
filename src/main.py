@@ -312,23 +312,29 @@ class Window(QWidget):
         self.command_bar.clear()
         self.change_mode(self._mode_before_command)
         self.setFocus()
+        self.command_bar.setReadOnly(False)
         self.render_pdf()
 
     def submit_command(self):
+        # Don't allow commands if we are showing an error
+        if self.command_bar.isReadOnly():
+            return
         text = self.command_bar.text().lstrip(":").strip()
-        self.exit_command()
         self.handle_command(text)
 
     def handle_command(self, text: str):
         parts = text.split(" ", 1)
         cmd = parts[0]
-        args = parts[1:] if len(parts) > 1 else ""
-
-        assert args == ""
 
         match cmd:
             case _:
-                pass  # commands to be added
+                self._show_command_error(f"Not a command: {cmd}")
+
+    def _show_command_error(self, message: str):
+        self.command_bar.setText(message)
+        self.command_bar.setReadOnly(True)
+        self._position_command_bar()
+        self.command_bar.setVisible(True)
 
     def change_mode(self, mode: str):
         if mode == "normal":
