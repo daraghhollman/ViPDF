@@ -115,7 +115,6 @@ class PDFDocument:
     def get_new_character(
         self, current_character: Character | None, delta: Tuple[int, int]
     ) -> Character | None:
-
         if current_character is None:
             return None
 
@@ -167,7 +166,6 @@ class PDFDocument:
 
 
 class Window(QWidget):
-
     def __init__(self, parent=None):
         super().__init__(parent=parent)
 
@@ -219,7 +217,6 @@ class Window(QWidget):
         super().keyPressEvent(event)
 
     def change_mode(self, mode: str):
-
         if mode == "normal":
             for shortcut in self.normal_keybinds:
                 shortcut.setEnabled(True)
@@ -259,7 +256,6 @@ class Window(QWidget):
         visible_bottom = self.y_scroll_offset + viewport_h
 
         for i, (page_y, page_h) in enumerate(self.pdf.page_positions):
-
             scaled_page_y = int(page_y * self.zoom) + i * self.page_gap
             page_bottom = page_y + page_h
 
@@ -554,7 +550,6 @@ class Window(QWidget):
 
 
 class CaretNavigator:
-
     def __init__(self, pdf: PDFDocument):
         self.pdf = pdf
         self.current_character = pdf.get_character(0, 0, 0)
