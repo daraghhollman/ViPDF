@@ -5,9 +5,24 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pymupdf
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import QObject, Qt
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QKeyEvent,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QLineEdit,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from keybinds import (
     CARET_KEYBINDS,
@@ -31,6 +46,15 @@ class Character:
     column: int = 0
 
 
+@dataclass
+class Annotation:
+    page: int
+    rect: tuple[float, float, float, float]
+    comment: str
+    color: tuple[float, float, float] | None
+    vertices: list[tuple[float, float]] | None
+
+
 class PDFDocument:
     ROW_TOLERANCE = 3
 
@@ -40,6 +64,7 @@ class PDFDocument:
         self._calculate_page_positions()
         self._extract_all_characters()
         self._cluster_rows()
+        self._extract_all_annotations()
 
     def _calculate_page_positions(self):
         self.page_positions = []
@@ -79,6 +104,22 @@ class PDFDocument:
                             )
 
             self.pages.append({"Characters": page_characters})
+
+    def _extract_all_annotations(self):
+        self.annotations: List[Annotation] = []
+
+        for page_index, page in enumerate(self.doc):  # type: ignore[arg-type]
+            for annot in page.annots():
+                if annot.type[0] == pymupdf.PDF_ANNOT_HIGHLIGHT:  # type: ignore[arg-type]
+                    self.annotations.append(
+                        Annotation(
+                            page=page_index,
+                            rect=tuple(annot.rect),
+                            comment=annot.info["content"],
+                            color=annot.colors.get("stroke"),
+                            vertices=annot.vertices,
+                        )
+                    )
 
     def _cluster_rows(self):
         for page in self.pages:
@@ -164,6 +205,28 @@ class PDFDocument:
             case _:
                 raise ValueError("Incorrect input for 'delta'")
 
+    def get_annotation_at(self, character: Character) -> Annotation | None:
+        cx0, cy0, cx1, cy1 = character.bbox
+        for annotation in self.annotations:
+            if annotation.page != character.page:
+                continue
+            ax0, ay0, ax1, ay1 = annotation.rect
+            if cx0 < ax1 and cx1 > ax0 and cy0 < ay1 and cy1 > ay0:
+                return annotation
+        return None
+
+
+class CommandBarFilter(QObject):
+    def __init__(self, on_escape):
+        super().__init__()
+        self._on_escape = on_escape
+
+    def eventFilter(self, obj, event):
+        if isinstance(event, QKeyEvent) and event.key() == Qt.Key.Key_Escape:
+            self._on_escape()
+            return True
+        return False
+
 
 class Window(QWidget):
     def __init__(self, parent=None):
@@ -178,10 +241,21 @@ class Window(QWidget):
         # Layout things
         self.label = QLabel(self)
         self.label.setScaledContents(True)
+        self.label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.label)
         self.setLayout(layout)
+
+        # Set an initial window size
+        self.resize(800, 600)
+
+        # Command bar
+        self.command_bar = QLineEdit(self)
+        self.command_bar.setVisible(False)
+        self.command_bar.returnPressed.connect(self.submit_command)
+        self._cmd_filter = CommandBarFilter(self.exit_command)
+        self.command_bar.installEventFilter(self._cmd_filter)
 
         self.pdf = PDFDocument(sys.argv[1])
         self.caret = CaretNavigator(self.pdf)
@@ -202,6 +276,11 @@ class Window(QWidget):
         self._key_buffer: str = ""
 
     def keyPressEvent(self, event):
+        # Check first for commands
+        if event.text() == ":" and self.mode != "command":
+            self.enter_command()
+            return
+
         self._key_buffer += event.text()
 
         for sequence, action in SEQUENCE_KEYBINDS:
@@ -215,6 +294,41 @@ class Window(QWidget):
             self._key_buffer = ""
 
         super().keyPressEvent(event)
+
+    def enter_command(self):
+        self._mode_before_command = self.mode
+        self.mode = "command"
+        self.command_bar.setText(":")
+        self._position_command_bar()
+        self.command_bar.setVisible(True)
+        self.command_bar.setFocus()
+
+    def _position_command_bar(self):
+        bar_h = self.command_bar.sizeHint().height()
+        self.command_bar.setGeometry(0, self.height() - bar_h, self.width(), bar_h)
+
+    def exit_command(self):
+        self.command_bar.setVisible(False)
+        self.command_bar.clear()
+        self.change_mode(self._mode_before_command)
+        self.setFocus()
+        self.render_pdf()
+
+    def submit_command(self):
+        text = self.command_bar.text().lstrip(":").strip()
+        self.exit_command()
+        self.handle_command(text)
+
+    def handle_command(self, text: str):
+        parts = text.split(" ", 1)
+        cmd = parts[0]
+        args = parts[1:] if len(parts) > 1 else ""
+
+        assert args == ""
+
+        match cmd:
+            case _:
+                pass  # commands to be added
 
     def change_mode(self, mode: str):
         if mode == "normal":
@@ -246,6 +360,9 @@ class Window(QWidget):
     def render_pdf(self):
         viewport_h = self.label.height()
         viewport_w = self.label.width()
+
+        if viewport_w <= 0 or viewport_h <= 0:
+            return
 
         canvas = QImage(viewport_w, viewport_h, QImage.Format.Format_RGB888)
         canvas.fill(Qt.GlobalColor.lightGray)
@@ -298,6 +415,13 @@ class Window(QWidget):
                 ):
                     self._scroll_to_keep_caret_visible()
 
+            # If we are in caret mode, and hovering over an annotation - display
+            # the content.
+            if self.mode == "caret" and self.caret.current_character is not None:
+                annot = self.pdf.get_annotation_at(self.caret.current_character)
+                if annot and annot.comment:
+                    self._draw_annotation_popup(painter, annot, draw_x, draw_y)
+
         painter.end()
         self.label.setPixmap(QPixmap.fromImage(canvas))
 
@@ -338,6 +462,61 @@ class Window(QWidget):
                 screen_h,
                 QColor(255, 0, 0, 120),
             )
+
+    def _draw_annotation_popup(
+        self,
+        painter: QPainter,
+        annotation: Annotation,
+        page_draw_x: int,
+        page_draw_y: int,
+    ):
+        PADDING = 6
+        MAX_WIDTH = 300
+
+        ax0, ay0, ax1, ay1 = annotation.rect
+        anchor_x = int(page_draw_x + ax0 * self.zoom)
+        anchor_y = int(page_draw_y + ay1 * self.zoom)  # just below the annotation
+
+        font = painter.font()
+        font.setPointSize(10)
+        painter.setFont(font)
+
+        metrics = painter.fontMetrics()
+        text_rect = metrics.boundingRect(
+            0,
+            0,
+            MAX_WIDTH,
+            0,
+            Qt.TextFlag.TextWordWrap,
+            annotation.comment,
+        )
+
+        box_w = text_rect.width() + PADDING * 2
+        box_h = text_rect.height() + PADDING * 2
+        box_x = anchor_x
+        box_y = anchor_y + 4  # small gap below the annotation rect
+
+        # Keep popup inside the viewport horizontally
+        viewport_w = self.label.width()
+        if box_x + box_w > viewport_w:
+            box_x = viewport_w - box_w - PADDING
+
+        painter.fillRect(
+            box_x, box_y, box_w, box_h, QColor(255, 255, 180)
+        )  # pale yellow
+
+        painter.setPen(QColor(80, 80, 0))
+        painter.drawRect(box_x, box_y, box_w, box_h)
+
+        painter.setPen(QColor(0, 0, 0))
+        painter.drawText(
+            box_x + PADDING,
+            box_y + PADDING,
+            text_rect.width(),
+            text_rect.height(),
+            Qt.TextFlag.TextWordWrap,
+            annotation.comment,
+        )
 
     def _scroll_to_keep_caret_visible(self):
         char = self.caret.current_character
@@ -546,6 +725,8 @@ class Window(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if self.command_bar.isVisible():
+            self._position_command_bar()
         self.render_pdf()
 
 
